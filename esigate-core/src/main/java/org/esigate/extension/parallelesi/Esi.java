@@ -14,6 +14,12 @@
  */
 package org.esigate.extension.parallelesi;
 
+import java.util.Properties;
+import java.util.concurrent.Executor;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+
 import org.apache.commons.lang3.StringUtils;
 import org.esigate.Driver;
 import org.esigate.events.Event;
@@ -29,26 +35,33 @@ import org.esigate.util.ParameterInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Properties;
-import java.util.concurrent.Executor;
-import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-
 /**
  * This extension processes ESI directives, like :
  * <p>
- * &lt;esi:include src="$(PROVIDER{cms})/news" fragment="news_1"/>
+ * &lt;esi:include src="$(PROVIDER{cms})/news" fragment="news_1"/&gt;
  * <p>
  * This extension implements multi-threaded processing, aka Parallel ESI.
+ * <p>
+ * It uses the following parameters :
+ * <ul>
+ * <li>esi_max_threads : Maximum number of thread allocated to run parallel esi requests. Default is 0 : parallel esi is
+ * disabled.</li>
+ * <li>esi_min_threads : Minimun number of allocated threads.</li>
+ * <li>esi_max_idle : Release threads after X seconds of idle.</li>
+ * <li>esi_max_queue : Maximum waiting esi requests (waiting for threads). When the limit is reached, new requests are
+ * refused.</li>
+ * </ul>
  * 
  * @author Nicolas Richeton
  */
 public class Esi implements Extension, IEventListener {
     private static final Logger LOG = LoggerFactory.getLogger(Esi.class);
     // esi_max_threads = 0 -> linear execution
-    private static final Parameter<Integer> THREADS = new ParameterInteger("esi_max_threads", 0);
-    private static final Parameter<Integer> IDLE = new ParameterInteger("esi_max_idle", 60);
+    public static final Parameter<Integer> MAX_THREADS = new ParameterInteger("esi_max_threads", 0);
+    public static final Parameter<Integer> MIN_THREADS = new ParameterInteger("esi_min_threads", 0);
+    public static final Parameter<Integer> CORE_THREADS = new ParameterInteger("esi_core_threads", 0);
+    public static final Parameter<Integer> IDLE = new ParameterInteger("esi_max_idle", 60);
+    public static final Parameter<Integer> MAX_QUEUE = new ParameterInteger("esi_max_queue", 10000);
     private Executor executor;
     public static final String[] CAPABILITIES = new String[] {"ESI/1.0", "ESI-Inline/1.0", "X-ESI-Fragment/1.0",
             "X-ESI-Replace/1.0", "X-ESI-XSLT/1.0", "ESIGATE/4.0"};
@@ -99,15 +112,23 @@ public class Esi implements Extension, IEventListener {
         });
 
         // Load configuration
-        int maxThreads = THREADS.getValue(properties);
+        int maxThreads = MAX_THREADS.getValue(properties);
+        int coreThreads = CORE_THREADS.getValue(properties);
+        int minThreads = MIN_THREADS.getValue(properties);
+        if (minThreads > 0 && coreThreads == 0) {
+            coreThreads = minThreads;
+        }
+
         int idle = IDLE.getValue(properties);
+        int maxQueue = MAX_QUEUE.getValue(properties);
 
         if (maxThreads == 0) {
             this.executor = null;
             LOG.info("Linear ESI processing enabled.");
         } else {
             this.executor =
-                    new ThreadPoolExecutor(0, maxThreads, idle, TimeUnit.SECONDS, new SynchronousQueue<Runnable>());
+                    new ThreadPoolExecutor(coreThreads, maxThreads, idle, TimeUnit.SECONDS,
+                            new LinkedBlockingQueue<Runnable>(maxQueue));
 
             LOG.info("Multi-threaded ESI processing enabled. Thread limit: {}, max idle {}.",
                     String.valueOf(maxThreads), String.valueOf(idle));

@@ -25,6 +25,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.RunnableFuture;
 import java.util.regex.Pattern;
 
@@ -242,16 +243,20 @@ class IncludeElement extends BaseElement {
         Future<CharSequence> result;
         IncludeTask task =
                 new IncludeTask(includeTag, src, alt, ctx, current, ignoreError, fragmentReplacements,
-                        regexpReplacements, executor);
+                        regexpReplacements, null); // executor is null to disable parallel esi on recursive calls.
         if (executor == null) {
             // No threads.
             CharSequence content = task.call();
             result = new CharSequenceFuture(content);
         } else {
             // Start processing in a new thread.
-            RunnableFuture<CharSequence> r = new FutureTask<>(task);
-            executor.execute(r);
-            result = r;
+            try {
+                RunnableFuture<CharSequence> r = new FutureTask<>(task);
+                executor.execute(r);
+                result = r;
+            } catch (RejectedExecutionException e) {
+                throw new HttpErrorPage(509, "Limits exceeded", e);
+            }
         }
         ctx.getCurrent().characters(result);
     }
